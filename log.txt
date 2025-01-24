@@ -1,0 +1,2 @@
+[ 24/01/2025 15:20:31 ] SUCESSO: Site https://www.youtube.com/ está online
+[ 24/01/2025 15:20:32 ] ERRO: Site https://random-status-code.herokuapp.com/ está offline ou inacessível

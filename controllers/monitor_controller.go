@@ -52,24 +52,27 @@ func monitoramentoInfinito() {
 	utils.ClearScreen()
 	fmt.Println("Iniciando Monitoramento Infinito...")
 	sites := LerSitesDoArquivo()
+	if len(sites) == 0 {
+		fmt.Println("Nenhum site para monitorar. Certifique-se de adicionar URLs ao arquivo 'sites.txt'.")
+		utils.EsperarEnter()
+		return
+	}
+
 	for {
 		select {
 		case <-models.EncerrarMonitoramento:
 			utils.ClearScreen()
-			fmt.Println("Monitoramento encerrado pelo chat commands.")
+			fmt.Println("Monitoramento encerrado pelo Chat Commands.")
 			utils.EsperarEnter()
 			return
 		default:
-			for i := 0; i < models.Monitoramentos; i++ {
-				for idx, site := range sites {
-					if site == "" {
-						continue
-					}
-					fmt.Printf("Testando site %d: %s\n", idx+1, site)
-					TestaSite(site)
+			for _, site := range sites {
+				if site != "" {
+					fmt.Printf("Testando site: %s\n", site)
+					TestaSite(site) // Chama o método que testa o site
 				}
-				time.Sleep(models.Delay * time.Second)
 			}
+			time.Sleep(models.Delay * time.Second) // Pausa para respeitar o intervalo configurado
 		}
 	}
 }

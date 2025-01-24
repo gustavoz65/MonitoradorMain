@@ -50,13 +50,30 @@ func EsperarEnter() {
 	}
 }
 
-// SimularCarregamento gera uma animação simples de "..."
+// SimularCarregamento gera uma animação personalizada de carregamento.
+// SimularCarregamento gera uma barra de progresso verde no terminal.
 func SimularCarregamento(mensagem string, duracaoSegundos int) {
-	ClearScreen()
-	fmt.Println(mensagem)
-	for i := 0; i < duracaoSegundos; i++ {
-		time.Sleep(1 * time.Second)
-		fmt.Print(".")
+	barraTamanho := 50 // Tamanho da barra de progresso
+	incremento := float64(barraTamanho) / float64(duracaoSegundos*10)
+	progresso := 0.0
+
+	verde := "\033[32m" // Cor verde
+	reset := "\033[0m"  // Reset da cor
+
+	fmt.Printf("%s\n", mensagem)
+	for i := 0; i < duracaoSegundos*10; i++ {
+		progresso += incremento
+		barra := "["
+		for j := 0; j < barraTamanho; j++ {
+			if float64(j) < progresso {
+				barra += fmt.Sprintf("%s=%s", verde, reset) // Parte preenchida em verde
+			} else {
+				barra += " " // Parte vazia
+			}
+		}
+		barra += "]"
+		fmt.Printf("\r%s", barra) // Atualiza a barra no terminal
+		time.Sleep(100 * time.Millisecond)
 	}
-	fmt.Println("\nConcluído!")
+	fmt.Println("\nConcluído!") // Finaliza com mensagem de conclusão
 }

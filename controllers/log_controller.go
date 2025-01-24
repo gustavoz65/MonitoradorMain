@@ -18,6 +18,17 @@ func LerSitesDoArquivo() []string {
 	var sites []string
 	arquivo, err := os.Open("sites.txt")
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("Arquivo 'sites.txt' não encontrado. Criando um arquivo vazio...")
+			file, createErr := os.Create("sites.txt")
+			if createErr != nil {
+				fmt.Println("Erro ao criar o arquivo 'sites.txt':", createErr)
+				return sites
+			}
+			defer file.Close()
+			fmt.Println("Arquivo 'sites.txt' criado com sucesso. Adicione os sites que deseja monitorar e execute novamente.")
+			return sites
+		}
 		fmt.Println("Erro ao abrir o arquivo de sites:", err)
 		return sites
 	}
