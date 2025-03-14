@@ -1,50 +1,34 @@
 package controllers
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"os"
-	"strings"
+	"net/http"
+	"strconv"
 	"time"
 
-	"github.com/gustavoz65/MoniMaster/utils"
+	"github.com/gin-gonic/gin"
 )
 
-func RealizarVarreduraDePortas() {
-	fmt.Println("===== Varredura de Portas =====")
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Digite o domínio ou IP para varredura de portas: ")
-	host, _ := reader.ReadString('\n')
-	host = strings.TrimSpace(host)
-
+// RealizarVarreduraDePortasHTTP realiza uma varredura simples (nas portas 80 e 443) no host informado.
+func RealizarVarreduraDePortasHTTP(c *gin.Context) {
+	host := c.Query("host")
 	if host == "" {
-		fmt.Println("Nenhum domínio ou IP fornecido.")
-		utils.EsperarEnter()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "O parâmetro 'host' é obrigatório"})
 		return
 	}
 
-	fmt.Println("\n=== Varredura de Portas ===")
-	varrerPortas(host)
-	utils.EsperarEnter()
-}
-
-func varrerPortas(host string) {
-	// Lista de portas comuns
-	ports := []int{80, 443, 22, 21, 25, 3306, 8080, 8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 8090,
-		49152, 65535, 49151, 1024, 1023, 1022, 1021, 1020,
-		1019, 1018, 1017, 1016, 1015, 1014, 1013, 1012, 1011,
-		1010, 1009, 1008, 1007, 1006, 1005, 1004, 1003, 1002,
-		1001, 1000, 0}
-
+	var results []string
+	ports := []int{80, 443}
 	for _, port := range ports {
-		address := fmt.Sprintf("%s:%d", host, port)
+		address := net.JoinHostPort(host, strconv.Itoa(port))
 		conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 		if err != nil {
-			fmt.Printf("❌ Porta %d está fechada\n", port)
+			results = append(results, fmt.Sprintf("Porta %d fechada", port))
 			continue
 		}
 		conn.Close()
-		fmt.Printf("✅ Porta %d está aberta\n", port)
+		results = append(results, fmt.Sprintf("Porta %d aberta", port))
 	}
+	c.JSON(http.StatusOK, gin.H{"host": host, "results": results})
 }

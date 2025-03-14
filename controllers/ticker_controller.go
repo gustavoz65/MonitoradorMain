@@ -9,7 +9,7 @@ import (
 	"github.com/gustavoz65/MoniMaster/utils"
 )
 
-func GerenciarTicker() {
+func GerenciarTicker(stopChan <-chan struct{}) {
 	if models.Ticker != nil {
 		models.Ticker.Stop()
 	}
@@ -17,8 +17,13 @@ func GerenciarTicker() {
 	defer models.Ticker.Stop()
 
 	for {
-		<-models.Ticker.C
-		limparLogsAutomaticamente()
+		select {
+		case <-models.Ticker.C:
+			limparLogsAutomaticamente()
+		case <-stopChan:
+			fmt.Println("Encerrando Ticker de limpeza de logs.")
+			return
+		}
 	}
 }
 
@@ -57,11 +62,11 @@ func ConfigurarIntervaloLimpeza() {
 	}
 	models.IntervaloLimpeza = time.Duration(dias) * 24 * time.Hour
 	ReiniciarTicker()
-	fmt.Printf("Intervalo configurado para %d Dias.\n", dias)
+	fmt.Printf("Intervalo configurado para %d dias.\n", dias)
 	utils.EsperarEnter()
 }
 
-// Apenas um alias para facilitar escrita no site_controller.go
+// Alias para facilitar a chamada
 func limparLogsAutomaticamente() {
 	LimparLogsAutomaticamente()
 }

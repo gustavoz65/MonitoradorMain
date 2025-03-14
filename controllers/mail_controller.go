@@ -13,6 +13,44 @@ import (
 	"gopkg.in/gomail.v2"
 )
 
+var smtpConfig = struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	From     string
+}{}
+
+func carregarSMTPConfig() error {
+	smtpConfig.Host = os.Getenv("SMTP_HOST")
+	if strings.TrimSpace(smtpConfig.Host) == "" {
+		return errors.New("SMTP_HOST não está configurado")
+	}
+	portStr := os.Getenv("SMTP_PORT")
+	if strings.TrimSpace(portStr) == "" {
+		return errors.New("SMTP_PORT não está configurado")
+	}
+	var err error
+	smtpConfig.Port, err = strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("SMTP_PORT inválido: %v", err)
+	}
+	smtpConfig.User = os.Getenv("SMTP_USER")
+	if strings.TrimSpace(smtpConfig.User) == "" {
+		return errors.New("SMTP_USER não está configurado")
+	}
+	smtpConfig.Password = os.Getenv("SMTP_PASSWORD")
+	if strings.TrimSpace(smtpConfig.Password) == "" {
+		return errors.New("SMTP_PASSWORD não está configurado")
+	}
+	// Permitir configuração do remetente ou usar um padrão
+	smtpConfig.From = os.Getenv("SMTP_FROM")
+	if strings.TrimSpace(smtpConfig.From) == "" {
+		smtpConfig.From = "MonitoramentoSAOFC@Outlook.com"
+	}
+	return nil
+}
+
 func ConfigurarEmail() {
 	models.Mutex.Lock()
 	defer models.Mutex.Unlock()
@@ -35,7 +73,6 @@ func ConfigurarEmail() {
 	utils.EsperarEnter()
 }
 
-// EnviarEmail dispara e-mail se houver erro no site.
 func EnviarEmail(site string, mensagemErro string) {
 	models.Mutex.Lock()
 	email := models.EmailNotificacao
@@ -46,70 +83,43 @@ func EnviarEmail(site string, mensagemErro string) {
 		utils.EsperarEnter()
 		return
 	}
-
 	assunto := "Erro de Monitoramento no Site: " + site
-	err := MandarEmail(email, assunto, mensagemErro)
-	if err != nil {
+
+	// Carregar configurações SMTP (se ainda não carregadas)
+	if err := carregarSMTPConfig(); err != nil {
+		fmt.Printf("Erro na configuração SMTP: %v\n", err)
+		utils.EsperarEnter()
+		return
+	}
+
+	if err := MandarEmail(email, assunto, mensagemErro); err != nil {
 		fmt.Printf("Falha ao enviar e-mail: %v\n", err)
 		utils.EsperarEnter()
 	}
 }
 
-// MandarEmail faz a configuração com SMTP e envia o e-mail de fato.
 func MandarEmail(to string, subject string, body string) error {
-
-	// Valida e-mail destinatário
-	_, err := mail.ParseAddress(to)
-	if err != nil {
+	// Validação dos parâmetros
+	if _, err := mail.ParseAddress(to); err != nil {
 		return fmt.Errorf("endereço de e-mail inválido: %v", err)
 	}
-
-	// Assunto não vazio
 	if strings.TrimSpace(subject) == "" {
 		return errors.New("o assunto do e-mail não pode estar vazio")
 	}
-
-	// Corpo não vazio
 	if strings.TrimSpace(body) == "" {
 		return errors.New("o corpo do e-mail não pode estar vazio")
 	}
 
-	host := os.Getenv("SMTP_HOST")
-	if strings.TrimSpace(host) == "" {
-		return errors.New("SMTP_HOST não está configurado nas variáveis de ambiente")
-	}
-
-	portStr := os.Getenv("SMTP_PORT")
-	if strings.TrimSpace(portStr) == "" {
-		return errors.New("SMTP_PORT não está configurado nas variáveis de ambiente")
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return fmt.Errorf("SMTP_PORT inválido: %v", err)
-	}
-
-	user := os.Getenv("SMTP_USER")
-	if strings.TrimSpace(user) == "" {
-		return errors.New("SMTP_USER não está configurado nas variáveis de ambiente")
-	}
-
-	password := os.Getenv("SMTP_PASSWORD")
-	if strings.TrimSpace(password) == "" {
-		return errors.New("SMTP_PASSWORD não está configurado nas variáveis de ambiente")
-	}
-
 	msg := gomail.NewMessage()
-	msg.SetHeader("From", "MonitoramentoSAOFC@Outlook.com") // Remetente fixo
+	msg.SetHeader("From", smtpConfig.From)
 	msg.SetHeader("To", to)
 	msg.SetHeader("Subject", subject)
 	msg.SetBody("text/plain", body)
 
-	dialer := gomail.NewDialer(host, port, user, password)
-
+	dialer := gomail.NewDialer(smtpConfig.Host, smtpConfig.Port, smtpConfig.User, smtpConfig.Password)
 	if err := dialer.DialAndSend(msg); err != nil {
 		return fmt.Errorf("erro ao enviar e-mail: %v", err)
 	}
-
 	fmt.Println("E-mail enviado com sucesso")
 	return nil
 }

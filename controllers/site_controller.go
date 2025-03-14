@@ -1,32 +1,43 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 )
 
-// TestaSite verifica se o site está online ou não e registra log + envia e-mail.
+// TestaSite verifica se o site está online, registra log e envia e-mail em caso de erro.
 func TestaSite(site string) {
-	resp, err := http.Get(site)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, site, nil)
 	if err != nil {
-		mensagem := fmt.Sprintf("❌ [ERRO] Site %s está offline ou inacessível: %v", site, err)
-		printColored(mensagem, "red")
-		RegistraLog(site, false)
-		EnviarEmail(site, err.Error())
+		handleSiteError(site, err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		handleSiteError(site, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
-		mensagem := fmt.Sprintf("✅ [SUCESSO] Site %s está online.", site)
-		printColored(mensagem, "green")
+	if resp.StatusCode == http.StatusOK {
+		printColored(fmt.Sprintf("✅ [SUCESSO] Site %s está online.", site), "green")
 		RegistraLog(site, true)
 	} else {
-		mensagem := fmt.Sprintf("❌ [ERRO] Site %s retornou o status code: %d", site, resp.StatusCode)
-		printColored(mensagem, "red")
+		printColored(fmt.Sprintf("❌ [ERRO] Site %s retornou o status code: %d", site, resp.StatusCode), "red")
 		RegistraLog(site, false)
 		EnviarEmail(site, fmt.Sprintf("Status Code: %d", resp.StatusCode))
 	}
+}
+
+func handleSiteError(site string, err error) {
+	printColored(fmt.Sprintf("❌ [ERRO] Site %s está offline ou inacessível: %v", site, err), "red")
+	RegistraLog(site, false)
+	EnviarEmail(site, err.Error())
 }
 
 func printColored(message string, color string) {

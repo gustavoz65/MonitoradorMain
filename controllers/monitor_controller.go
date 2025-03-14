@@ -1,14 +1,17 @@
 package controllers
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gustavoz65/MoniMaster/models"
 	"github.com/gustavoz65/MoniMaster/utils"
 )
 
-// SubMonitoramento exibe opções de monitoramento e inicia conforme escolhido.
 func SubMonitoramento() {
 	utils.ClearScreen()
 	utils.SimularCarregamento("Preparando monitoramento", 3)
@@ -18,24 +21,24 @@ func SubMonitoramento() {
 	fmt.Println("3- Voltar ao menu principal")
 	fmt.Println("==================================")
 	fmt.Print("Escolha uma opção: ")
-
 	var opcao int
 	fmt.Scanln(&opcao)
-
 	switch opcao {
 	case 1:
 		utils.ClearScreen()
-		go IniciarChatCommands() // inicia goroutine que escuta /sair
-		monitoramentoInfinito()
+		ctx, cancel := context.WithCancel(context.Background())
+		go IniciarChatCommandsComCancel(cancel)
+		monitoramentoInfinito(ctx)
 	case 2:
 		utils.ClearScreen()
 		fmt.Println("Digite a quantidade de horas para o monitoramento:")
 		var horas int
 		fmt.Scanln(&horas)
 		if horas > 0 {
-			utils.ClearScreen()
-			go IniciarChatCommands()
-			iniciarMonitoramentoPorHoras(horas)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(horas)*time.Hour)
+			defer cancel()
+			go IniciarChatCommandsComCancel(cancel)
+			iniciarMonitoramentoPorHoras(ctx)
 		} else {
 			fmt.Println("Valor de horas inválido.")
 			utils.EsperarEnter()
@@ -48,7 +51,7 @@ func SubMonitoramento() {
 	}
 }
 
-func monitoramentoInfinito() {
+func monitoramentoInfinito(ctx context.Context) {
 	utils.ClearScreen()
 	fmt.Println("Iniciando Monitoramento Infinito...")
 	sites := LerSitesDoArquivo()
@@ -57,57 +60,71 @@ func monitoramentoInfinito() {
 		utils.EsperarEnter()
 		return
 	}
-
 	for {
 		select {
-		case <-models.EncerrarMonitoramento:
+		case <-ctx.Done():
 			utils.ClearScreen()
-			fmt.Println("Monitoramento encerrado pelo Chat Commands.")
+			fmt.Println("Monitoramento encerrado.")
 			utils.EsperarEnter()
 			return
 		default:
 			for _, site := range sites {
 				if site != "" {
 					fmt.Printf("Testando site: %s\n", site)
-					TestaSite(site) // Chama o método que testa o site
+					TestaSite(site)
 				}
 			}
-			time.Sleep(models.Delay * time.Second) // Pausa para respeitar o intervalo configurado
+			time.Sleep(time.Duration(models.Delay) * time.Second)
 		}
 	}
 }
 
-func iniciarMonitoramentoPorHoras(horas int) {
+func iniciarMonitoramentoPorHoras(ctx context.Context) {
 	utils.ClearScreen()
-	fmt.Printf("Iniciando Monitoramento por %d horas...\n", horas)
+	fmt.Println("Iniciando Monitoramento por tempo determinado...")
 	sites := LerSitesDoArquivo()
-	duracao := time.Duration(horas) * time.Hour
-	inicio := time.Now()
-
+	if len(sites) == 0 {
+		fmt.Println("Nenhum site para monitorar. Verifique o arquivo 'sites.txt'.")
+		utils.EsperarEnter()
+		return
+	}
 	for {
 		select {
-		case <-models.EncerrarMonitoramento:
+		case <-ctx.Done():
 			utils.ClearScreen()
-			fmt.Println("Monitoramento encerrado pelo chat commands.")
+			fmt.Println("Tempo de monitoramento finalizado ou cancelado!")
 			utils.EsperarEnter()
 			return
 		default:
-			if time.Since(inicio) >= duracao {
-				utils.ClearScreen()
-				fmt.Println("Tempo de monitoramento finalizado!")
-				utils.EsperarEnter()
-				return
-			}
-			for i := 0; i < models.Monitoramentos; i++ {
-				for idx, site := range sites {
-					if site == "" {
-						continue
-					}
-					fmt.Printf("Testando site %d: %s\n", idx+1, site)
-					TestaSite(site)
+			for idx, site := range sites {
+				if site == "" {
+					continue
 				}
-				time.Sleep(models.Delay * time.Second)
+				fmt.Printf("Testando site %d: %s\n", idx+1, site)
+				TestaSite(site)
 			}
+			time.Sleep(time.Duration(models.Delay) * time.Second)
+		}
+	}
+}
+
+func IniciarChatCommandsComCancel(cancelFunc context.CancelFunc) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println("===== Chat Commands =====")
+		fmt.Println("Digite um comando (/sair para encerrar o monitoramento):")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Erro ao ler comando:", err)
+			continue
+		}
+		input = strings.TrimSpace(input)
+		if strings.ToLower(input) == "/sair" {
+			fmt.Println("Encerrando monitoramento pelo Chat Commands...")
+			cancelFunc()
+			return
+		} else {
+			fmt.Println("Comando não reconhecido. Tente novamente.")
 		}
 	}
 }

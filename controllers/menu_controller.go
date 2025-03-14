@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gustavoz65/MoniMaster/utils"
@@ -23,19 +24,17 @@ func ExibirMenu() {
 	fmt.Print("Escolha uma opção: ")
 }
 
-// LerComando lê a opção digitada no menu.
 func LerComando() int {
-	var input string
-	fmt.Scanln(&input)
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
 
-	// Se digitar "sair", encerra
 	if strings.ToLower(input) == "sair" {
 		fmt.Println("Saindo do Programa...")
 		os.Exit(0)
 	}
 
-	var comando int
-	_, err := fmt.Sscanf(input, "%d", &comando)
+	comando, err := strconv.Atoi(input)
 	if err != nil {
 		fmt.Println("Entrada inválida. Por favor, digite um número.")
 		utils.EsperarEnter()
@@ -44,18 +43,16 @@ func LerComando() int {
 	return comando
 }
 
-// ExibirIntroducao apenas imprime a introdução.
 func ExibirIntroducao() {
 	utils.ClearScreen()
 	roxoEscuro := "\033[35m"
 	reset := "\033[0m"
-	fmt.Printf("%sBem-vindo ao MoniMaster%s\n", roxoEscuro, reset)
-	fmt.Println()
+	fmt.Printf("%sBem-vindo ao MoniMaster%s\n\n", roxoEscuro, reset)
 }
 
 func RealizarLogin() bool {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Digite seu usuario: ")
+	fmt.Print("Digite seu usuário: ")
 	username, _ := reader.ReadString('\n')
 	username = strings.TrimSpace(username)
 
@@ -74,6 +71,6 @@ func RealizarLogin() bool {
 }
 
 func ValidarCredenciais(username, senha string) bool {
-	// Simulação de validação de credenciais
-	return username == "admin" && senha == "admin123"
+	// Em produção, integre com uma base de dados ou serviço de autenticação
+	return username == "admin" && senha == "admin"
 }
