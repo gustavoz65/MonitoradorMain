@@ -1,43 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
-	"github.com/gin-gonic/gin"
-	"github.com/gustavoz65/MoniMaster/config"
-	"github.com/gustavoz65/MoniMaster/routes"
-	"github.com/joho/godotenv"
+	"github.com/gustavoz65/MoniMaster/internal/app"
 )
 
+var version = "3.0.0"
+
 func main() {
-	// Carrega variáveis de ambiente do arquivo .env
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Não foi possível carregar .env; utilizando variáveis de ambiente existentes")
+	app.Version = version
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println("MoniMaster CLI " + version)
+		return
 	}
-
-	// Inicializa a conexão com o PostgreSQL
-	db, err := config.InitDB()
-	if err != nil {
-		log.Fatalf("Erro ao conectar ao banco de dados: %v", err)
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
 	}
-	defer db.Close()
-
-	// Realiza as migrações (criação das tabelas)
-	config.Migrate(db)
-
-	// Cria o servidor Gin
-	router := gin.Default()
-
-	// Configura as rotas e injeta a conexão com o DB via middleware
-	routes.SetupRoutes(router, db)
-
-	// Inicia o servidor na porta definida em SERVER_PORT (ou 8080 por padrão)
-	port := os.Getenv("SERVER_PORT")
-	if port == "" {
-		port = "8080"
-	}
-	log.Printf("Servidor rodando na porta %s", port)
-	router.Run(":" + port)
 }
