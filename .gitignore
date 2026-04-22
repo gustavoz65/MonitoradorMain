@@ -1,3 +1,5 @@
 .env
-sites.txt
-log.txt
+.monimaster/
+*.db
+*.sqlite
+*.sqlite3
