@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,22 +22,24 @@ import (
 	"github.com/gustavoz65/MoniMaster/internal/report"
 	"github.com/gustavoz65/MoniMaster/internal/shared"
 	"github.com/gustavoz65/MoniMaster/internal/storage"
+	"github.com/gustavoz65/MoniMaster/internal/tui"
 	"github.com/joho/godotenv"
 )
 
-const version = "2.0.0"
+var Version = "3.0.0"
 
 type App struct {
-	manager  *config.Manager
-	cfg      config.AppConfig
-	store    storage.Store
-	auth     *auth.Service
-	notify   *notify.Service
-	monitor  *monitor.Service
-	session  Session
-	reader   *bufio.Reader
-	rootCtx  context.Context
-	rootDone context.CancelFunc
+	manager   *config.Manager
+	cfg       config.AppConfig
+	store     storage.Store
+	auth      *auth.Service
+	notify    *notify.Service
+	monitor   *monitor.Service
+	session   Session
+	reader    *bufio.Reader
+	resultsCh chan []shared.SiteResult
+	rootCtx   context.Context
+	rootDone  context.CancelFunc
 }
 
 func Run() error {
@@ -58,13 +61,14 @@ func Run() error {
 	}
 
 	app := &App{
-		manager: manager,
-		cfg:     cfg,
-		store:   store,
-		auth:    auth.NewService(store),
-		notify:  notify.NewService(store),
-		monitor: monitor.NewService(),
-		reader:  bufio.NewReader(os.Stdin),
+		manager:   manager,
+		cfg:       cfg,
+		store:     store,
+		auth:      auth.NewService(store),
+		notify:    notify.NewService(store),
+		monitor:   monitor.NewService(),
+		reader:    bufio.NewReader(os.Stdin),
+		resultsCh: make(chan []shared.SiteResult, 4),
 	}
 	app.rootCtx, app.rootDone = context.WithCancel(context.Background())
 	defer app.rootDone()
@@ -76,134 +80,115 @@ func Run() error {
 		_ = report.PruneLogsOlderThan(app.manager.LogsPath(), duration)
 	}
 
-	fmt.Println("MoniMaster CLI")
-	fmt.Printf("Workspace: %s\n", app.manager.HomeDir())
-	fmt.Println("Entrada interativa para autenticação; depois, shell por comandos.")
-	entered, err := app.entry()
+	result, err := tui.RunEntry(app)
 	if err != nil {
 		return err
 	}
-	if !entered {
+	if !result.Proceed {
 		return nil
 	}
-	return app.shell()
-}
-
-func (a *App) entry() (bool, error) {
-	for {
-		fmt.Println("")
-		fmt.Println("1 - Login")
-		fmt.Println("2 - Cadastro")
-		fmt.Println("3 - Continuar anônimo")
-		fmt.Println("4 - Configurar banco")
-		fmt.Println("5 - Assistente inicial")
-		fmt.Println("0 - Sair")
-		fmt.Print("> ")
-		line, err := a.reader.ReadString('\n')
-		if err != nil {
-			return false, err
-		}
-		switch strings.TrimSpace(line) {
-		case "1":
-			if err := a.interactiveLogin(); err != nil {
-				fmt.Println("Erro:", err)
-				continue
-			}
-			return true, nil
-		case "2":
-			if err := a.interactiveRegister(); err != nil {
-				fmt.Println("Erro:", err)
-				continue
-			}
-			return true, nil
-		case "3":
-			a.session = Session{Mode: shared.SessionModeAnonymous}
-			return true, nil
-		case "4":
-			if err := a.runConfigWizard(); err != nil {
-				fmt.Println("Erro:", err)
-			}
-		case "5":
-			if err := a.runSetupWizard(); err != nil {
-				fmt.Println("Erro:", err)
-			}
-		case "0":
-			return false, nil
-		default:
-			fmt.Println("Opção inválida.")
-		}
+	if result.Identity != nil {
+		app.session = Session{Mode: result.Mode, Identity: result.Identity}
+	} else {
+		app.session = Session{Mode: result.Mode}
 	}
+	return tui.RunShell(app)
 }
 
-func (a *App) shell() error {
-	fmt.Println("")
-	fmt.Println("Sessão pronta. Digite `help` para ver os comandos.")
-	for {
-		fmt.Print("monimaster> ")
-		line, err := a.reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		cmd, err := cli.Parse(line)
-		if err != nil {
-			fmt.Println("Erro de comando:", err)
-			continue
-		}
-		exit, err := a.execute(cmd)
-		if err != nil {
-			fmt.Println("Erro:", err)
-		}
-		if exit {
-			return nil
-		}
-	}
+func (a *App) Execute(cmd cli.Command) (bool, string, error) {
+	var sb strings.Builder
+	exit, err := a.executeWriter(cmd, &sb)
+	return exit, sb.String(), err
 }
 
-func (a *App) execute(cmd cli.Command) (bool, error) {
+func (a *App) executeWriter(cmd cli.Command, w io.Writer) (bool, error) {
 	if len(cmd.Path) == 0 {
 		return false, nil
 	}
 	switch cmd.Path[0] {
 	case "help":
-		fmt.Print(cli.HelpText)
+		fmt.Fprint(w, cli.HelpText)
 	case "exit", "quit":
 		a.monitor.Stop()
 		return true, nil
 	case "version":
-		fmt.Printf("MoniMaster CLI %s\n", version)
+		fmt.Fprintf(w, "MoniMaster CLI %s\n", Version)
 	case "profile":
-		a.printProfile()
+		a.printProfile(w)
 	case "auth":
 		return false, a.handleAuth(cmd)
 	case "config":
-		return false, a.handleConfig(cmd)
+		return false, a.handleConfig(cmd, w)
 	case "doctor":
-		return false, a.handleDoctor()
+		return false, a.handleDoctor(w)
 	case "sites":
-		return false, a.handleSites(cmd)
+		return false, a.handleSites(cmd, w)
 	case "monitor":
-		return false, a.handleMonitor(cmd)
+		if len(cmd.Path) >= 2 && cmd.Path[1] == "dashboard" {
+			interval := time.Duration(a.cfg.Monitor.DelaySeconds) * time.Second
+			if err := tui.RunDashboard(a, interval); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		return false, a.handleMonitor(cmd, w)
 	case "logs":
-		return false, a.handleLogs(cmd)
+		return false, a.handleLogs(cmd, w)
 	case "notify":
-		return false, a.handleNotify(cmd)
+		return false, a.handleNotify(cmd, w)
 	case "cleanup":
-		return false, a.handleCleanup(cmd)
+		return false, a.handleCleanup(cmd, w)
 	case "portscan":
-		return false, a.handlePortscan(cmd)
+		return false, a.handlePortscan(cmd, w)
 	case "history":
-		return false, a.handleHistory(cmd)
+		return false, a.handleHistory(cmd, w)
 	case "report":
-		return false, a.handleReport(cmd)
+		return false, a.handleReport(cmd, w)
 	default:
-		fmt.Println("Comando desconhecido. Use `help`.")
+		fmt.Fprintln(w, "Comando desconhecido. Use `help`.")
 	}
 	return false, nil
 }
+
+func (a *App) Login(username, password string) (*shared.Identity, error) {
+	identity, err := a.auth.Login(username, password)
+	if err != nil {
+		return nil, err
+	}
+	a.session = Session{Mode: shared.SessionModeAuthenticated, Identity: &identity}
+	return &identity, nil
+}
+
+func (a *App) Register(username, email, password string) (*shared.Identity, error) {
+	identity, err := a.auth.Register(username, email, password)
+	if err != nil {
+		return nil, err
+	}
+	a.session = Session{Mode: shared.SessionModeAuthenticated, Identity: &identity}
+	return &identity, nil
+}
+
+func (a *App) ConfigDB(driver, dsn string) error {
+	a.cfg.Storage = config.StorageConfig{Enabled: true, Driver: driver, DSN: dsn}
+	return a.reloadStoreAndSave()
+}
+
+func (a *App) SetupWizard(useDB bool, driver, dsn, defaultEmail string) error {
+	if useDB {
+		a.cfg.Storage = config.StorageConfig{Enabled: true, Driver: driver, DSN: dsn}
+		if err := a.reloadStoreAndSave(); err != nil {
+			return err
+		}
+	}
+	if defaultEmail != "" {
+		a.cfg.Notification.DefaultEmail = defaultEmail
+	}
+	return a.manager.Save(a.cfg)
+}
+
+func (a *App) MonitorStatus() monitor.Status { return a.monitor.Status() }
+
+func (a *App) SubscribeResults() <-chan []shared.SiteResult { return a.resultsCh }
 
 func (a *App) handleAuth(cmd cli.Command) error {
 	if len(cmd.Path) < 2 {
@@ -216,20 +201,19 @@ func (a *App) handleAuth(cmd cli.Command) error {
 		return a.interactiveRegister()
 	case "logout":
 		a.session = Session{Mode: shared.SessionModeAnonymous}
-		fmt.Println("Sessão voltou para modo anônimo.")
 		return nil
 	default:
 		return fmt.Errorf("subcomando auth inválido")
 	}
 }
 
-func (a *App) handleConfig(cmd cli.Command) error {
+func (a *App) handleConfig(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 {
 		return fmt.Errorf("use config show|wizard|db|smtp|notify")
 	}
 	switch cmd.Path[1] {
 	case "show":
-		a.printConfig()
+		a.printConfig(w)
 	case "wizard":
 		return a.runSetupWizard()
 	case "db":
@@ -267,28 +251,28 @@ func (a *App) handleConfig(cmd cli.Command) error {
 		if err := a.manager.Save(a.cfg); err != nil {
 			return err
 		}
-		fmt.Println("SMTP atualizado.")
+		fmt.Fprintln(w, "SMTP atualizado.")
 	case "notify":
-		return a.handleConfigNotify(cmd)
+		return a.handleConfigNotify(cmd, w)
 	default:
 		return fmt.Errorf("config inválido")
 	}
 	return nil
 }
 
-func (a *App) handleDoctor() error {
+func (a *App) handleDoctor(w io.Writer) error {
 	checks := doctor.Run(a.manager, a.cfg, a.store)
 	for _, check := range checks {
 		status := "OK"
 		if !check.Healthy {
 			status = "FAIL"
 		}
-		fmt.Printf("[%s] %s - %s\n", status, check.Name, check.Details)
+		fmt.Fprintf(w, "[%s] %s - %s\n", status, check.Name, check.Details)
 	}
 	return nil
 }
 
-func (a *App) handleSites(cmd cli.Command) error {
+func (a *App) handleSites(cmd cli.Command, w io.Writer) error {
 	sites, err := a.manager.LoadSiteConfigs()
 	if err != nil {
 		return err
@@ -299,7 +283,7 @@ func (a *App) handleSites(cmd cli.Command) error {
 	switch cmd.Path[1] {
 	case "list":
 		if len(sites) == 0 {
-			fmt.Println("Nenhum site configurado.")
+			fmt.Fprintln(w, "Nenhum site configurado.")
 			return nil
 		}
 		for index, site := range sites {
@@ -313,7 +297,7 @@ func (a *App) handleSites(cmd cli.Command) error {
 			if site.Method != "" && site.Method != "GET" {
 				extra += " [" + site.Method + "]"
 			}
-			fmt.Printf("%d. %s%s\n", index+1, site.URL, extra)
+			fmt.Fprintf(w, "%d. %s%s\n", index+1, site.URL, extra)
 		}
 	case "add":
 		if len(cmd.Args) == 0 {
@@ -348,7 +332,7 @@ func (a *App) handleSites(cmd cli.Command) error {
 		if err := a.manager.SaveSiteConfigs(sites); err != nil {
 			return err
 		}
-		fmt.Println("Site adicionado.")
+		fmt.Fprintln(w, "Site adicionado.")
 	case "remove":
 		if len(cmd.Args) == 0 {
 			return fmt.Errorf("use sites remove <url>")
@@ -363,7 +347,7 @@ func (a *App) handleSites(cmd cli.Command) error {
 		if err := a.manager.SaveSiteConfigs(filtered); err != nil {
 			return err
 		}
-		fmt.Println("Site removido.")
+		fmt.Fprintln(w, "Site removido.")
 	case "update":
 		if len(cmd.Args) == 0 {
 			return fmt.Errorf("use sites update <url> [flags]")
@@ -393,12 +377,12 @@ func (a *App) handleSites(cmd cli.Command) error {
 			break
 		}
 		if !updated {
-			return fmt.Errorf("site nao encontrado: %s", target)
+			return fmt.Errorf("site não encontrado: %s", target)
 		}
 		if err := a.manager.SaveSiteConfigs(sites); err != nil {
 			return err
 		}
-		fmt.Println("Site atualizado.")
+		fmt.Fprintln(w, "Site atualizado.")
 	case "import":
 		filePath := cmd.Flags["file"]
 		if filePath == "" {
@@ -427,23 +411,23 @@ func (a *App) handleSites(cmd cli.Command) error {
 		if err := a.manager.SaveSiteConfigs(merged); err != nil {
 			return err
 		}
-		fmt.Printf("%d sites salvos.\n", len(merged))
+		fmt.Fprintf(w, "%d sites salvos.\n", len(merged))
 	default:
 		return fmt.Errorf("subcomando sites inválido")
 	}
 	return nil
 }
 
-func (a *App) handleMonitor(cmd cli.Command) error {
+func (a *App) handleMonitor(cmd cli.Command, w io.Writer) error {
 	sites, err := a.manager.LoadSiteConfigs()
 	if err != nil {
 		return err
 	}
-	if len(sites) == 0 {
-		return fmt.Errorf("nenhum site cadastrado; use sites add")
-	}
 	if len(cmd.Path) < 2 {
 		return fmt.Errorf("use monitor once|start|status|stop|alert")
+	}
+	if len(sites) == 0 && cmd.Path[1] != "status" && cmd.Path[1] != "alert" {
+		return fmt.Errorf("nenhum site cadastrado; use sites add")
 	}
 	opts := monitor.Options{
 		Workers: a.cfg.Monitor.WorkerCount,
@@ -454,6 +438,9 @@ func (a *App) handleMonitor(cmd cli.Command) error {
 	case "once":
 		results := a.monitor.CheckSitesOnce(a.rootCtx, sites, opts)
 		a.handleMonitorResults(results)
+		for _, result := range results {
+			fmt.Fprintf(w, "[%s] %s -> %s\n", strings.ToUpper(resultLevel(result)), result.Site, resultMessage(result))
+		}
 	case "start":
 		if cmd.Flags["hours"] != "" {
 			hours, err := strconv.Atoi(cmd.Flags["hours"])
@@ -465,10 +452,10 @@ func (a *App) handleMonitor(cmd cli.Command) error {
 		if err := a.monitor.Start(a.rootCtx, sites, opts, a.handleMonitorResults); err != nil {
 			return fmt.Errorf("monitoramento já está ativo")
 		}
-		fmt.Println("Monitoramento iniciado em background.")
+		fmt.Fprintln(w, "Monitoramento iniciado em background.")
 	case "status":
 		status := a.monitor.Status()
-		fmt.Printf("running=%t sites=%d cycles=%d started=%s last=%s\n",
+		fmt.Fprintf(w, "running=%t sites=%d cycles=%d started=%s last=%s\n",
 			status.Running,
 			status.SiteCount,
 			status.CycleCount,
@@ -477,19 +464,19 @@ func (a *App) handleMonitor(cmd cli.Command) error {
 		)
 	case "stop":
 		if a.monitor.Stop() {
-			fmt.Println("Monitoramento encerrado.")
+			fmt.Fprintln(w, "Monitoramento encerrado.")
 		} else {
-			fmt.Println("Nenhum monitoramento ativo.")
+			fmt.Fprintln(w, "Nenhum monitoramento ativo.")
 		}
 	case "alert":
-		return a.handleMonitorAlert(cmd)
+		return a.handleMonitorAlert(cmd, w)
 	default:
 		return fmt.Errorf("subcomando monitor inválido")
 	}
 	return nil
 }
 
-func (a *App) handleLogs(cmd cli.Command) error {
+func (a *App) handleLogs(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 {
 		return fmt.Errorf("use logs show|clear|export")
 	}
@@ -500,17 +487,17 @@ func (a *App) handleLogs(cmd cli.Command) error {
 			return err
 		}
 		if len(logs) == 0 {
-			fmt.Println("Nenhum log disponível.")
+			fmt.Fprintln(w, "Nenhum log disponível.")
 			return nil
 		}
 		for _, entry := range logs {
-			fmt.Printf("[%s] %s %s - %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), strings.ToUpper(entry.Level), entry.Target, entry.Message)
+			fmt.Fprintf(w, "[%s] %s %s - %s\n", entry.Timestamp.Format("2006-01-02 15:04:05"), strings.ToUpper(entry.Level), entry.Target, entry.Message)
 		}
 	case "clear":
 		if err := report.ClearFile(a.manager.LogsPath()); err != nil {
 			return err
 		}
-		fmt.Println("Logs limpos.")
+		fmt.Fprintln(w, "Logs limpos.")
 	case "export":
 		format := defaultString(cmd.Flags["format"], "json")
 		output := defaultString(cmd.Flags["output"], filepath.Join(a.manager.HomeDir(), "export", "logs"))
@@ -525,14 +512,14 @@ func (a *App) handleLogs(cmd cli.Command) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("Logs exportados para", path)
+		fmt.Fprintln(w, "Logs exportados para", path)
 	default:
 		return fmt.Errorf("subcomando logs inválido")
 	}
 	return nil
 }
 
-func (a *App) handleNotify(cmd cli.Command) error {
+func (a *App) handleNotify(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 || cmd.Path[1] != "email" {
 		return fmt.Errorf("use notify email set|test")
 	}
@@ -551,20 +538,20 @@ func (a *App) handleNotify(cmd cli.Command) error {
 		if err := a.manager.Save(a.cfg); err != nil {
 			return err
 		}
-		fmt.Println("Email de notificação configurado.")
+		fmt.Fprintln(w, "Email de notificação configurado.")
 	case "test":
 		target := a.notify.ResolveTarget(a.cfg, a.session.Identity)
 		if err := a.notify.SendSync(a.cfg, target, "Teste MoniMaster", "Seu canal de notificacao esta configurado."); err != nil {
 			return err
 		}
-		fmt.Println("Email de teste enviado para", target)
+		fmt.Fprintln(w, "Email de teste enviado para", target)
 	default:
 		return fmt.Errorf("subcomando notify inválido")
 	}
 	return nil
 }
 
-func (a *App) handleCleanup(cmd cli.Command) error {
+func (a *App) handleCleanup(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 || cmd.Path[1] != "interval" || firstArg(cmd.Args) != "set" {
 		return fmt.Errorf("use cleanup interval set 7d")
 	}
@@ -578,11 +565,11 @@ func (a *App) handleCleanup(cmd cli.Command) error {
 	if err := a.manager.Save(a.cfg); err != nil {
 		return err
 	}
-	fmt.Println("Intervalo de limpeza atualizado.")
+	fmt.Fprintln(w, "Intervalo de limpeza atualizado.")
 	return nil
 }
 
-func (a *App) handlePortscan(cmd cli.Command) error {
+func (a *App) handlePortscan(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 || cmd.Path[1] != "run" {
 		return fmt.Errorf("use portscan run --host example.com")
 	}
@@ -610,7 +597,7 @@ func (a *App) handlePortscan(cmd cli.Command) error {
 		if result.Open {
 			status = "open"
 		}
-		fmt.Printf("%s:%d %s (%s)\n", result.Host, result.Port, status, result.Latency)
+		fmt.Fprintf(w, "%s:%d %s (%s)\n", result.Host, result.Port, status, result.Latency)
 	}
 	openCount := 0
 	for _, result := range results {
@@ -622,7 +609,7 @@ func (a *App) handlePortscan(cmd cli.Command) error {
 	return nil
 }
 
-func (a *App) handleHistory(cmd cli.Command) error {
+func (a *App) handleHistory(cmd cli.Command, w io.Writer) error {
 	limit := 20
 	if cmd.Flags["limit"] != "" {
 		value, err := strconv.Atoi(cmd.Flags["limit"])
@@ -636,7 +623,7 @@ func (a *App) handleHistory(cmd cli.Command) error {
 		return err
 	}
 	if len(history) == 0 {
-		fmt.Println("Nenhum histórico local.")
+		fmt.Fprintln(w, "Nenhum histórico local.")
 		return nil
 	}
 	sort.Slice(history, func(i, j int) bool { return history[i].CreatedAt.After(history[j].CreatedAt) })
@@ -644,12 +631,12 @@ func (a *App) handleHistory(cmd cli.Command) error {
 		limit = len(history)
 	}
 	for _, entry := range history[:limit] {
-		fmt.Printf("[%s] %s %s -> %s\n", entry.CreatedAt.Format("2006-01-02 15:04:05"), entry.Actor, entry.Action, entry.Details)
+		fmt.Fprintf(w, "[%s] %s %s -> %s\n", entry.CreatedAt.Format("2006-01-02 15:04:05"), entry.Actor, entry.Action, entry.Details)
 	}
 	return nil
 }
 
-func (a *App) handleReport(cmd cli.Command) error {
+func (a *App) handleReport(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 2 {
 		return fmt.Errorf("use report uptime|ports")
 	}
@@ -660,7 +647,7 @@ func (a *App) handleReport(cmd cli.Command) error {
 			return err
 		}
 		if len(logs) == 0 {
-			fmt.Println("Sem dados para relatório.")
+			fmt.Fprintln(w, "Sem dados para relatório.")
 			return nil
 		}
 		type counter struct{ ok, fail int }
@@ -677,7 +664,7 @@ func (a *App) handleReport(cmd cli.Command) error {
 		for site, value := range stats {
 			total := value.ok + value.fail
 			uptime := float64(value.ok) / float64(total) * 100
-			fmt.Printf("%s -> uptime %.2f%% (%d ok / %d fail)\n", site, uptime, value.ok, value.fail)
+			fmt.Fprintf(w, "%s -> uptime %.2f%% (%d ok / %d fail)\n", site, uptime, value.ok, value.fail)
 		}
 	case "ports":
 		history, err := report.ReadHistory(a.manager.HistoryPath())
@@ -686,7 +673,7 @@ func (a *App) handleReport(cmd cli.Command) error {
 		}
 		for _, entry := range history {
 			if entry.Action == "portscan" {
-				fmt.Printf("[%s] %s\n", entry.CreatedAt.Format("2006-01-02 15:04:05"), entry.Details)
+				fmt.Fprintf(w, "[%s] %s\n", entry.CreatedAt.Format("2006-01-02 15:04:05"), entry.Details)
 			}
 		}
 	default:
@@ -696,16 +683,14 @@ func (a *App) handleReport(cmd cli.Command) error {
 }
 
 func (a *App) handleMonitorResults(results []shared.SiteResult) {
+	select {
+	case a.resultsCh <- results:
+	default:
+	}
 	for _, result := range results {
-		level := "info"
-		message := fmt.Sprintf("site online (%d, %s)", result.StatusCode, result.Latency)
+		level := resultLevel(result)
+		message := resultMessage(result)
 		if !result.Online {
-			level = "error"
-			if result.Error != "" {
-				message = result.Error
-			} else {
-				message = fmt.Sprintf("site retornou status %d", result.StatusCode)
-			}
 			target := a.notify.ResolveTarget(a.cfg, a.session.Identity)
 			if target != "" {
 				_ = a.notify.Send(a.cfg, target, "Alerta MoniMaster: falha detectada", fmt.Sprintf("Falha em %s: %s", result.Site, message))
@@ -719,7 +704,6 @@ func (a *App) handleMonitorResults(results []shared.SiteResult) {
 			Message:   message,
 		}
 		_ = report.AppendJSONLine(a.manager.LogsPath(), entry)
-		fmt.Printf("[%s] %s -> %s\n", strings.ToUpper(level), result.Site, message)
 		details := message
 		if result.Online {
 			details = fmt.Sprintf("online em %s", result.Latency)
@@ -802,36 +786,36 @@ func (a *App) reloadStoreAndSave() error {
 	return nil
 }
 
-func (a *App) printProfile() {
-	fmt.Printf("mode=%s\n", a.session.Mode)
+func (a *App) printProfile(w io.Writer) {
+	fmt.Fprintf(w, "mode=%s\n", a.session.Mode)
 	if a.session.Identity != nil {
-		fmt.Printf("user=%s <%s>\n", a.session.Identity.Username, a.session.Identity.Email)
+		fmt.Fprintf(w, "user=%s <%s>\n", a.session.Identity.Username, a.session.Identity.Email)
 	}
-	fmt.Printf("storage=%s enabled=%t\n", a.store.Driver(), a.store.Enabled())
-	fmt.Printf("workspace=%s\n", a.manager.HomeDir())
+	fmt.Fprintf(w, "storage=%s enabled=%t\n", a.store.Driver(), a.store.Enabled())
+	fmt.Fprintf(w, "workspace=%s\n", a.manager.HomeDir())
 }
 
-func (a *App) printConfig() {
-	fmt.Printf("storage.enabled=%t\n", a.cfg.Storage.Enabled)
-	fmt.Printf("storage.driver=%s\n", a.cfg.Storage.Driver)
-	fmt.Printf("storage.dsn=%s\n", shared.MaskSecret(a.cfg.Storage.DSN))
-	fmt.Printf("smtp.host=%s\n", a.cfg.SMTP.Host)
-	fmt.Printf("smtp.port=%d\n", a.cfg.SMTP.Port)
-	fmt.Printf("smtp.user=%s\n", a.cfg.SMTP.User)
-	fmt.Printf("smtp.password=%s\n", shared.MaskSecret(a.cfg.SMTP.Password))
-	fmt.Printf("smtp.from=%s\n", a.cfg.SMTP.From)
-	fmt.Printf("monitor.delay=%ds\n", a.cfg.Monitor.DelaySeconds)
-	fmt.Printf("monitor.timeout=%ds\n", a.cfg.Monitor.TimeoutSeconds)
-	fmt.Printf("monitor.workers=%d\n", a.cfg.Monitor.WorkerCount)
-	fmt.Printf("cleanup.interval=%s\n", a.cfg.Monitor.CleanupInterval)
-	fmt.Printf("alert.latency_warn=%s\n", a.cfg.Alert.LatencyWarn)
-	fmt.Printf("alert.latency_crit=%s\n", a.cfg.Alert.LatencyCrit)
-	fmt.Printf("alert.cert_warn_days=%d\n", a.cfg.Alert.CertWarnDays)
-	fmt.Printf("notify.provider=%s\n", a.cfg.Notify.Provider)
-	fmt.Printf("notify.email=%s\n", a.notify.ResolveTarget(a.cfg, a.session.Identity))
+func (a *App) printConfig(w io.Writer) {
+	fmt.Fprintf(w, "storage.enabled=%t\n", a.cfg.Storage.Enabled)
+	fmt.Fprintf(w, "storage.driver=%s\n", a.cfg.Storage.Driver)
+	fmt.Fprintf(w, "storage.dsn=%s\n", shared.MaskSecret(a.cfg.Storage.DSN))
+	fmt.Fprintf(w, "smtp.host=%s\n", a.cfg.SMTP.Host)
+	fmt.Fprintf(w, "smtp.port=%d\n", a.cfg.SMTP.Port)
+	fmt.Fprintf(w, "smtp.user=%s\n", a.cfg.SMTP.User)
+	fmt.Fprintf(w, "smtp.password=%s\n", shared.MaskSecret(a.cfg.SMTP.Password))
+	fmt.Fprintf(w, "smtp.from=%s\n", a.cfg.SMTP.From)
+	fmt.Fprintf(w, "monitor.delay=%ds\n", a.cfg.Monitor.DelaySeconds)
+	fmt.Fprintf(w, "monitor.timeout=%ds\n", a.cfg.Monitor.TimeoutSeconds)
+	fmt.Fprintf(w, "monitor.workers=%d\n", a.cfg.Monitor.WorkerCount)
+	fmt.Fprintf(w, "cleanup.interval=%s\n", a.cfg.Monitor.CleanupInterval)
+	fmt.Fprintf(w, "alert.latency_warn=%s\n", a.cfg.Alert.LatencyWarn)
+	fmt.Fprintf(w, "alert.latency_crit=%s\n", a.cfg.Alert.LatencyCrit)
+	fmt.Fprintf(w, "alert.cert_warn_days=%d\n", a.cfg.Alert.CertWarnDays)
+	fmt.Fprintf(w, "notify.provider=%s\n", a.cfg.Notify.Provider)
+	fmt.Fprintf(w, "notify.email=%s\n", a.notify.ResolveTarget(a.cfg, a.session.Identity))
 }
 
-func (a *App) handleMonitorAlert(cmd cli.Command) error {
+func (a *App) handleMonitorAlert(cmd cli.Command, w io.Writer) error {
 	if firstArg(cmd.Args) != "set" {
 		return fmt.Errorf("use monitor alert set [--latency-warn 500ms] [--latency-crit 2s] [--cert-warn-days 30]")
 	}
@@ -849,11 +833,11 @@ func (a *App) handleMonitorAlert(cmd cli.Command) error {
 	if err := a.manager.Save(a.cfg); err != nil {
 		return err
 	}
-	fmt.Println("Thresholds de alerta atualizados.")
+	fmt.Fprintln(w, "Thresholds de alerta atualizados.")
 	return nil
 }
 
-func (a *App) handleConfigNotify(cmd cli.Command) error {
+func (a *App) handleConfigNotify(cmd cli.Command, w io.Writer) error {
 	if len(cmd.Path) < 3 || cmd.Path[2] != "provider" || firstArg(cmd.Args) != "set" {
 		return fmt.Errorf("use config notify provider set smtp|resend [--api-key xxx] [--from email]")
 	}
@@ -879,7 +863,7 @@ func (a *App) handleConfigNotify(cmd cli.Command) error {
 	if err := a.manager.Save(a.cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Provider de notificacao: %s\n", a.cfg.Notify.Provider)
+	fmt.Fprintf(w, "Provider de notificacao: %s\n", a.cfg.Notify.Provider)
 	return nil
 }
 
@@ -937,4 +921,21 @@ func (a *App) applyNotifyProvider() {
 	case "resend":
 		a.notify.SetProvider(&notify.ResendProvider{})
 	}
+}
+
+func resultLevel(result shared.SiteResult) string {
+	if !result.Online {
+		return "error"
+	}
+	return "info"
+}
+
+func resultMessage(result shared.SiteResult) string {
+	if !result.Online {
+		if result.Error != "" {
+			return result.Error
+		}
+		return fmt.Sprintf("site retornou status %d", result.StatusCode)
+	}
+	return fmt.Sprintf("site online (%d, %s)", result.StatusCode, result.Latency)
 }
