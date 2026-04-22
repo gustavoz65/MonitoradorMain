@@ -2,8 +2,22 @@
 
 ## Instalacao
 
+Linux/macOS:
+
 ```bash
 curl -sSf https://raw.githubusercontent.com/gustavoz65/MonitoradorMain/main/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/gustavoz65/MonitoradorMain/main/install.ps1 | iex
+```
+
+Windows CMD:
+
+```cmd
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/gustavoz65/MonitoradorMain/main/install.ps1 | iex"
 ```
 
 Ou baixe o binario na pagina de [Releases](https://github.com/gustavoz65/MonitoradorMain/releases).
