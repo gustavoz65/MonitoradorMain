@@ -1,0 +1,3 @@
+ed57145e4cdcb5d7717396a6289e8531a977d32e98fa17e9b0ce0bda3d548e3b  monimaster_3.0.0_darwin_amd64.tar.gz
+ee76617324a4708510f93cb6d7f47a32965d0c52f730bd708e09737a456c517d  monimaster_3.0.0_linux_amd64.tar.gz
+7db7b2105a36512871fe7b4e6cab7c2d6c02efe8025784e0bd41e81156911cbe  monimaster_3.0.0_windows_amd64.zip

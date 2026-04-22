@@ -22,6 +22,54 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 Ou baixe o binario na pagina de [Releases](https://github.com/gustavoz65/MonitoradorMain/releases).
 
+### Como o instalador funciona
+
+Em todas as plataformas, o instalador:
+
+- detecta sistema operacional e arquitetura
+- consulta a release mais recente no GitHub
+- baixa o binario correspondente
+- baixa `checksums.txt`
+- valida o arquivo por SHA256 antes de instalar
+- executa `monimaster version` no final para confirmar a instalacao
+
+### Onde o binario fica
+
+Linux/macOS:
+
+- instalacao em `/usr/local/bin/monimaster`
+- se necessario, o script usa `sudo` para mover o binario
+
+Windows:
+
+- instalacao em `%LOCALAPPDATA%\MoniMaster\bin\monimaster.exe`
+- o script adiciona essa pasta ao `PATH` do usuario
+- pode ser necessario fechar e abrir o terminal depois da instalacao
+
+### Verificando a instalacao
+
+Depois de instalar, rode:
+
+```bash
+monimaster version
+```
+
+Saida esperada:
+
+```text
+MoniMaster CLI 3.0.0
+```
+
+### Instalacao manual
+
+Se preferir nao usar script:
+
+1. Abra a pagina de [Releases](https://github.com/gustavoz65/MonitoradorMain/releases).
+2. Baixe o arquivo da sua plataforma.
+3. Extraia o binario.
+4. Coloque o executavel em uma pasta do `PATH`.
+5. Rode `monimaster version`.
+
 ## Quickstart
 
 ```bash
@@ -87,6 +135,27 @@ Depois disso, voce entra no prompt:
 ```text
 monimaster>
 ```
+
+### Primeiros passos recomendados
+
+Para um primeiro uso sem banco:
+
+```text
+Continuar anonimo
+sites add https://example.com --check-cert
+monitor once
+monitor start
+monitor dashboard
+logs show
+```
+
+Para um ambiente mais completo:
+
+1. configurar banco com `config db set ...` se quiser login e historico autenticado
+2. configurar SMTP com `config smtp set ...` se quiser alertas por e-mail
+3. definir e-mail de alerta com `notify email set ...`
+4. validar ambiente com `doctor run`
+5. adicionar sites e iniciar o monitoramento
 
 ## Estrutura local da ferramenta
 
@@ -162,6 +231,13 @@ Configurar SMTP:
 config smtp set --host smtp.example.com --port 587 --user no-reply@example.com --password secret --from monitor@example.com
 ```
 
+Configurar provider de notificacao:
+
+```text
+config notify provider set smtp
+config notify provider set resend --api-key re_xxx --from noreply@seudominio.com
+```
+
 ### Diagnostico
 
 Verificar ambiente:
@@ -183,13 +259,21 @@ sites list
 Adicionar:
 
 ```text
-sites add https://example.com
+sites add https://example.com --check-cert
+sites add https://example.com --method GET --expected-status 200-299 --body-match "pong" --check-cert --cert-warn-days 14
 ```
 
 Remover:
 
 ```text
 sites remove https://example.com
+```
+
+Atualizar:
+
+```text
+sites update https://example.com --expected-status 200 --check-cert
+sites update https://example.com --no-check-cert
 ```
 
 Importar de arquivo texto:
@@ -209,7 +293,7 @@ monitor once
 Rodar continuamente:
 
 ```text
-monitor start --mode infinite
+monitor start
 ```
 
 Rodar por horas:
@@ -228,6 +312,18 @@ Parar:
 
 ```text
 monitor stop
+```
+
+Configurar thresholds:
+
+```text
+monitor alert set --latency-warn 500ms --latency-crit 2s --cert-warn-days 30
+```
+
+Dashboard TUI:
+
+```text
+monitor dashboard
 ```
 
 ### Logs
@@ -284,6 +380,7 @@ Escanear conjunto customizado:
 
 ```text
 portscan run --host 127.0.0.1 --ports 22,80,443,8000-8010
+portscan run --host 127.0.0.1 --ports 22,80,443 --timeout 800ms
 ```
 
 ### Historico e relatorios
@@ -315,7 +412,7 @@ report ports
 5. Adicionar sites com `sites add`
 6. Validar o ambiente com `doctor run`
 7. Iniciar com `monitor once`
-8. Colocar em execucao com `monitor start --hours 2` ou `monitor start --mode infinite`
+8. Colocar em execucao com `monitor start --hours 2` ou `monitor start`
 
 ## Observacoes sobre Oracle
 
@@ -328,6 +425,60 @@ Rodar testes:
 ```bash
 go test ./...
 ```
+
+Build local:
+
+```bash
+go build ./...
+```
+
+Build do binario principal:
+
+```bash
+go build -o monimaster .
+./monimaster version
+```
+
+Sem `cgo`:
+
+```bash
+CGO_ENABLED=0 go build -o monimaster-nocgo .
+./monimaster-nocgo version
+```
+
+## Solucao de problemas
+
+### Windows: `bash` nao encontrado
+
+Se voce rodar `install.sh` no `cmd` e aparecer erro relacionado a `/bin/bash`, use o instalador PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/gustavoz65/MonitoradorMain/main/install.ps1 | iex
+```
+
+Ou no `cmd`:
+
+```cmd
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/gustavoz65/MonitoradorMain/main/install.ps1 | iex"
+```
+
+### Windows: `monimaster` ainda nao e reconhecido
+
+- feche e abra o terminal
+- confirme que `%LOCALAPPDATA%\MoniMaster\bin` entrou no `PATH`
+- rode diretamente:
+
+```powershell
+$env:LOCALAPPDATA\MoniMaster\bin\monimaster.exe version
+```
+
+### Linux/macOS: permissao ao instalar
+
+Se o script precisar escrever em `/usr/local/bin`, ele pode solicitar `sudo`.
+
+### Instalacao por release errada
+
+Use sempre `monimaster version` depois da instalacao para confirmar a versao ativa.
 
 ## Estrutura do projeto
 
